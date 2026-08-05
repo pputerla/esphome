@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from esphome.components.esp32 import VARIANT_ESP32C6
+from esphome.components.esp32 import VARIANT_ESP32C6, VARIANT_ESP32S3
 from esphome.components.esp32.const import (
     KEY_ESP32,
     KEY_IDF_VERSION,
@@ -12,13 +12,18 @@ from esphome.components.esp32.const import (
     KEY_VARIANT,
 )
 from esphome.components.openthread import _final_validate, _validate_tlv_hex
-from esphome.components.openthread.const import CONF_BORDER_ROUTER, CONF_DEVICE_TYPE
+from esphome.components.openthread.const import (
+    CONF_BORDER_ROUTER,
+    CONF_DEVICE_TYPE,
+    CONF_RCP,
+)
 import esphome.config_validation as cv
 from esphome.const import (
     CONF_AP,
     CONF_ENABLE_IPV6,
     CONF_ENABLE_ON_BOOT,
     CONF_ID,
+    CONF_LOGGER,
     CONF_NETWORKS,
     CONF_OPENTHREAD,
     CONF_WIFI,
@@ -147,6 +152,20 @@ def test_border_router_tlv_codegen(
     assert str(tlv_define.value) == f'"{TLV_DATASET}"'
 
 
+def test_border_router_rcp_codegen(
+    generate_main: Callable[[str | Path], str],
+) -> None:
+    cpp_main = generate_main(CONFIG_DIR / "border_router_rcp.yaml")
+
+    sdkconfig = CORE.data[KEY_ESP32][KEY_SDKCONFIG_OPTIONS]
+    assert sdkconfig["CONFIG_OPENTHREAD_RADIO_NATIVE"] is False
+    assert sdkconfig["CONFIG_OPENTHREAD_RADIO_SPINEL_UART"] is True
+    assert sdkconfig["CONFIG_VFS_SUPPORT_DIR"] is True
+    assert "CONFIG_ESP_COEX_SW_COEXIST_ENABLE" not in sdkconfig
+    assert any(define.name == "USE_OPENTHREAD_RCP_UART" for define in CORE.defines)
+    assert "OpenThreadComponent(460800, 18, 17, 16, false)" in cpp_main
+
+
 @pytest.mark.parametrize(
     ("value", "message"),
     [
@@ -214,6 +233,44 @@ def test_border_router_requires_esp32c6(
     _set_esp32_idf_core(set_core_config, "ESP32S3")
 
     with pytest.raises(cv.Invalid, match="currently requires ESP32-C6"):
+        _run_final_validation(monkeypatch, otbr_config, full_config)
+
+
+def test_border_router_rcp_accepts_esp32s3(
+    set_core_config: SetCoreConfigCallable,
+    monkeypatch: pytest.MonkeyPatch,
+    otbr_config: ConfigType,
+    full_config: ConfigType,
+) -> None:
+    _set_esp32_idf_core(set_core_config, VARIANT_ESP32S3)
+    otbr_config[CONF_BORDER_ROUTER][CONF_RCP] = {}
+
+    _run_final_validation(monkeypatch, otbr_config, full_config)
+
+
+@pytest.mark.parametrize(
+    ("extra_config", "message"),
+    [
+        ({"uart": [{}]}, "cannot currently be combined"),
+        (
+            {CONF_LOGGER: {"hardware_uart": "UART1", "baud_rate": 115200}},
+            "reserves UART1",
+        ),
+    ],
+)
+def test_border_router_rcp_rejects_uart_conflicts(
+    set_core_config: SetCoreConfigCallable,
+    monkeypatch: pytest.MonkeyPatch,
+    otbr_config: ConfigType,
+    full_config: ConfigType,
+    extra_config: ConfigType,
+    message: str,
+) -> None:
+    _set_esp32_idf_core(set_core_config, VARIANT_ESP32S3)
+    otbr_config[CONF_BORDER_ROUTER][CONF_RCP] = {}
+    full_config.update(extra_config)
+
+    with pytest.raises(cv.Invalid, match=message):
         _run_final_validation(monkeypatch, otbr_config, full_config)
 
 

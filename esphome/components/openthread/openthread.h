@@ -28,6 +28,10 @@ template<typename... Ts> class OpenThreadComponentPollPeriodAction;
 class OpenThreadComponent final : public Component {
  public:
   OpenThreadComponent();
+#ifdef USE_OPENTHREAD_RCP_UART
+  OpenThreadComponent(uint32_t rcp_baud_rate, int rcp_rx_pin, int rcp_tx_pin, int rcp_reset_pin,
+                      bool rcp_reset_active_level);
+#endif
   ~OpenThreadComponent();
   void dump_config() override;
   void setup() override;
@@ -62,6 +66,9 @@ class OpenThreadComponent final : public Component {
   void set_output_power(int8_t output_power) { this->output_power_ = output_power; }
   void set_connected(bool connected) { this->connected_ = connected; }
   static void on_state_changed(otChangedFlags flags, void *context);
+#ifdef USE_OPENTHREAD_RCP_UART
+  static void rcp_failure_handler();
+#endif
 
  protected:
   // Actions re-apply link mode under the OT lock; allow them to call apply_linkmode_()
@@ -74,6 +81,9 @@ class OpenThreadComponent final : public Component {
    */
   void apply_linkmode_(otInstance *instance);
   void mark_task_failed_();
+#ifdef USE_OPENTHREAD_RCP_UART
+  void reset_rcp_();
+#endif
 
   std::optional<otIp6Address> get_omr_address_(InstanceLock &lock);
   otInstance *get_openthread_instance_();
@@ -91,6 +101,13 @@ class OpenThreadComponent final : public Component {
   bool connected_{false};
 #ifdef USE_ESP32
   esp_netif_t *openthread_netif_{nullptr};
+#endif
+#ifdef USE_OPENTHREAD_RCP_UART
+  uint32_t rcp_baud_rate_;
+  int rcp_rx_pin_;
+  int rcp_tx_pin_;
+  int rcp_reset_pin_;
+  bool rcp_reset_active_level_;
 #endif
 
  private:

@@ -24,6 +24,18 @@ OpenThreadComponent *global_openthread_component =  // NOLINT(cppcoreguidelines-
 
 OpenThreadComponent::OpenThreadComponent() { global_openthread_component = this; }
 
+#ifdef USE_OPENTHREAD_RCP_UART
+OpenThreadComponent::OpenThreadComponent(uint32_t rcp_baud_rate, int rcp_rx_pin, int rcp_tx_pin, int rcp_reset_pin,
+                                         bool rcp_reset_active_level)
+    : rcp_baud_rate_(rcp_baud_rate),
+      rcp_rx_pin_(rcp_rx_pin),
+      rcp_tx_pin_(rcp_tx_pin),
+      rcp_reset_pin_(rcp_reset_pin),
+      rcp_reset_active_level_(rcp_reset_active_level) {
+  global_openthread_component = this;
+}
+#endif
+
 void OpenThreadComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "Open Thread:");
 #if CONFIG_OPENTHREAD_FTD
@@ -42,6 +54,19 @@ void OpenThreadComponent::dump_config() {
   if (this->output_power_.has_value()) {
     ESP_LOGCONFIG(TAG, "  Output power: %" PRId8 "dBm", *this->output_power_);
   }
+#ifdef USE_OPENTHREAD_RCP_UART
+  ESP_LOGCONFIG(TAG,
+                "  Radio: External RCP\n"
+                "  Transport: UART1 at %" PRIu32 " baud\n"
+                "  RX Pin: GPIO%d\n"
+                "  TX Pin: GPIO%d",
+                this->rcp_baud_rate_, this->rcp_rx_pin_, this->rcp_tx_pin_);
+  if (this->rcp_reset_pin_ >= 0) {
+    ESP_LOGCONFIG(TAG, "  RCP Reset Pin: GPIO%d", this->rcp_reset_pin_);
+  }
+#else
+  ESP_LOGCONFIG(TAG, "  Radio: Native 802.15.4");
+#endif
 }
 
 void OpenThreadComponent::on_state_changed(otChangedFlags flags, void *context) {

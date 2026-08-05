@@ -1,6 +1,6 @@
 from ipaddress import IPv6Network
 
-from esphome import automation
+from esphome import automation, pins
 import esphome.codegen as cg
 from esphome.components.esp32 import (
     VARIANT_ESP32C5,
@@ -14,6 +14,7 @@ from esphome.components.esp32 import (
     idf_version,
     include_builtin_idf_component,
     only_on_variant,
+    require_vfs_dir,
     require_vfs_select,
 )
 from esphome.components.mdns import MDNSComponent, enable_mdns_storage
@@ -23,14 +24,22 @@ from esphome.config_helpers import filter_source_files_from_platform
 import esphome.config_validation as cv
 from esphome.const import (
     CONF_AP,
+    CONF_BAUD_RATE,
     CONF_CHANNEL,
     CONF_ENABLE_IPV6,
     CONF_ENABLE_ON_BOOT,
     CONF_FRAMEWORK,
+    CONF_HARDWARE_UART,
     CONF_ID,
+    CONF_INVERTED,
     CONF_LOG_LEVEL,
+    CONF_LOGGER,
     CONF_NETWORKS,
+    CONF_NUMBER,
     CONF_OUTPUT_POWER,
+    CONF_RESET_PIN,
+    CONF_RX_PIN,
+    CONF_TX_PIN,
     CONF_USE_ADDRESS,
     PLATFORM_ESP32,
     PlatformFramework,
@@ -56,6 +65,7 @@ from .const import (
     CONF_PAN_ID,
     CONF_POLL_PERIOD,
     CONF_PSKC,
+    CONF_RCP,
     CONF_SRP_ID,
     CONF_TLV,
 )
@@ -95,9 +105,12 @@ def _validate_txpower(value):
 
 def set_sdkconfig_options(config: ConfigType) -> None:
     border_router = CONF_BORDER_ROUTER in config
+    rcp = border_router and CONF_RCP in config[CONF_BORDER_ROUTER]
 
-    add_idf_sdkconfig_option("CONFIG_IEEE802154_ENABLED", True)
-    add_idf_sdkconfig_option("CONFIG_OPENTHREAD_RADIO_NATIVE", True)
+    add_idf_sdkconfig_option("CONFIG_OPENTHREAD_RADIO_NATIVE", not rcp)
+    add_idf_sdkconfig_option("CONFIG_OPENTHREAD_RADIO_SPINEL_UART", rcp)
+    if not rcp:
+        add_idf_sdkconfig_option("CONFIG_IEEE802154_ENABLED", True)
 
     # There is a conflict if the logger's uart also uses the default UART, which is seen as a watchdog failure on "ot_cli"
     add_idf_sdkconfig_option("CONFIG_OPENTHREAD_CLI", False)
@@ -143,7 +156,8 @@ def set_sdkconfig_options(config: ConfigType) -> None:
     if border_router:
         add_idf_sdkconfig_option("CONFIG_OPENTHREAD_PLATFORM_NETIF", True)
         add_idf_sdkconfig_option("CONFIG_OPENTHREAD_BORDER_ROUTER", True)
-        add_idf_sdkconfig_option("CONFIG_ESP_COEX_SW_COEXIST_ENABLE", True)
+        if not rcp:
+            add_idf_sdkconfig_option("CONFIG_ESP_COEX_SW_COEXIST_ENABLE", True)
 
         add_idf_sdkconfig_option("CONFIG_LWIP_IPV6_FORWARD", True)
         add_idf_sdkconfig_option("CONFIG_LWIP_IPV6_NUM_ADDRESSES", 12)
@@ -200,8 +214,42 @@ def _validate_border_router(value: object) -> ConfigType:
     return cv.Schema(
         {
             cv.GenerateID(): cv.declare_id(OpenThreadBorderRouterComponent),
+            cv.Optional(CONF_RCP): _RCP_SCHEMA,
         }
     )(value)
+
+
+def _validate_reset_pin(value: object) -> ConfigType:
+    value = {CONF_NUMBER: value} if not isinstance(value, dict) else dict(value)
+    value.setdefault(CONF_INVERTED, True)
+    return pins.internal_gpio_output_pin_schema(value)
+
+
+def _validate_rcp(config: ConfigType) -> ConfigType:
+    pin_numbers = {
+        config[CONF_RX_PIN][CONF_NUMBER],
+        config[CONF_TX_PIN][CONF_NUMBER],
+    }
+    if len(pin_numbers) != 2:
+        raise cv.Invalid("RCP UART RX and TX pins must be different")
+    if (reset_pin := config.get(CONF_RESET_PIN)) is not None and reset_pin[
+        CONF_NUMBER
+    ] in pin_numbers:
+        raise cv.Invalid("RCP reset pin must be different from RX and TX pins")
+    return config
+
+
+_RCP_SCHEMA = cv.All(
+    cv.Schema(
+        {
+            cv.Required(CONF_RX_PIN): pins.internal_gpio_input_pin_schema,
+            cv.Required(CONF_TX_PIN): pins.internal_gpio_output_pin_schema,
+            cv.Optional(CONF_BAUD_RATE, default=460800): cv.positive_int,
+            cv.Optional(CONF_RESET_PIN): _validate_reset_pin,
+        }
+    ),
+    _validate_rcp,
+)
 
 
 _CONNECTION_SCHEMA = cv.Schema(
@@ -239,17 +287,25 @@ def _validate(config: ConfigType) -> ConfigType:
     return config
 
 
-def _require_vfs_select(config):
-    """Register VFS select requirement during config validation."""
+def _require_vfs(config):
+    """Register VFS requirements during config validation."""
     # OpenThread uses esp_vfs_eventfd which requires VFS select support (ESP32 only)
     if CORE.is_esp32:
         require_vfs_select()
+        if (
+            border_router := config.get(CONF_BORDER_ROUTER)
+        ) is not None and CONF_RCP in border_router:
+            require_vfs_dir()
     return config
 
 
 def _validate_platform(config):
     if CORE.using_zephyr:
         return config
+    if (
+        border_router := config.get(CONF_BORDER_ROUTER)
+    ) is not None and CONF_RCP in border_router:
+        return cv.only_on([PLATFORM_ESP32])(config)
     return only_on_variant(
         supported=[
             VARIANT_ESP32C5,
@@ -299,7 +355,7 @@ CONFIG_SCHEMA = cv.All(
     cv.has_exactly_one_key(CONF_NETWORK_KEY, CONF_TLV),
     _validate_platform,
     _validate,
-    _require_vfs_select,
+    _require_vfs,
 )
 
 
@@ -320,9 +376,13 @@ def _final_validate(config: ConfigType) -> ConfigType:
                 "OpenThread can only be used with Wi-Fi when 'border_router:' is configured."
             )
     else:
-        if CORE.using_arduino or get_esp32_variant() != VARIANT_ESP32C6:
+        rcp = config[CONF_BORDER_ROUTER].get(CONF_RCP)
+        if CORE.using_arduino:
+            raise cv.Invalid("OpenThread Border Router requires the ESP-IDF framework.")
+        if rcp is None and get_esp32_variant() != VARIANT_ESP32C6:
             raise cv.Invalid(
-                "OpenThread Border Router currently requires ESP32-C6 with the ESP-IDF framework."
+                "OpenThread Border Router with a native radio currently requires ESP32-C6. "
+                "Configure 'rcp:' to use an external OpenThread Radio Co-Processor."
             )
         if idf_version() < cv.Version(5, 5, 0):
             raise cv.Invalid(
@@ -344,6 +404,21 @@ def _final_validate(config: ConfigType) -> ConfigType:
             raise cv.Invalid(
                 "OpenThread Border Router requires Wi-Fi 'enable_on_boot: true'."
             )
+        if rcp is not None:
+            if full_config.get("uart") is not None:
+                raise cv.Invalid(
+                    "OpenThread RCP uses ESP-IDF's dedicated Spinel UART driver and "
+                    "cannot currently be combined with the ESPHome UART component."
+                )
+            if (
+                (logger_config := full_config.get(CONF_LOGGER)) is not None
+                and logger_config.get(CONF_HARDWARE_UART) == "UART1"
+                and logger_config.get(CONF_BAUD_RATE, 0) > 0
+            ):
+                raise cv.Invalid(
+                    "OpenThread RCP reserves UART1; configure the logger to use USB "
+                    "or another UART."
+                )
 
     if (
         (esp32_config := full_config.get(PLATFORM_ESP32)) is not None
@@ -372,6 +447,7 @@ FILTER_SOURCE_FILES = filter_source_files_from_platform(
 @coroutine_with_priority(CoroPriority.COMMUNICATION)
 async def to_code(config):
     border_router = CONF_BORDER_ROUTER in config
+    rcp = config[CONF_BORDER_ROUTER].get(CONF_RCP) if border_router else None
 
     # Re-enable openthread IDF component (excluded by default)
     if CORE.is_esp32:
@@ -380,6 +456,8 @@ async def to_code(config):
     cg.add_define("USE_OPENTHREAD")
     if border_router:
         cg.add_define("USE_OPENTHREAD_BORDER_ROUTER")
+    if rcp is not None:
+        cg.add_define("USE_OPENTHREAD_RCP_UART")
     if config.get(CONF_FORCE_DATASET):
         cg.add_define("USE_OPENTHREAD_FORCE_DATASET")
     if tlv := config.get(CONF_TLV):
@@ -389,7 +467,18 @@ async def to_code(config):
         # OpenThread SRP needs access to mDNS services after setup
         enable_mdns_storage()
 
-    ot = cg.new_Pvariable(config[CONF_ID])
+    if rcp is None:
+        ot = cg.new_Pvariable(config[CONF_ID])
+    else:
+        reset_pin = rcp.get(CONF_RESET_PIN)
+        ot = cg.new_Pvariable(
+            config[CONF_ID],
+            rcp[CONF_BAUD_RATE],
+            rcp[CONF_RX_PIN][CONF_NUMBER],
+            rcp[CONF_TX_PIN][CONF_NUMBER],
+            reset_pin[CONF_NUMBER] if reset_pin is not None else -1,
+            not reset_pin[CONF_INVERTED] if reset_pin is not None else False,
+        )
     add_use_address(ot, config[CONF_USE_ADDRESS])
     await cg.register_component(ot, config)
     if (poll_period := config.get(CONF_POLL_PERIOD)) is not None:

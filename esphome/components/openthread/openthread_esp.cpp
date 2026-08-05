@@ -11,6 +11,10 @@
 #include "esp_openthread_border_router.h"
 #include "esphome/components/wifi/wifi_component.h"
 #endif
+#ifdef USE_OPENTHREAD_RCP_UART
+#include "driver/gpio.h"
+#include "esp_openthread_spinel.h"
+#endif
 #include "esp_log.h"
 #include "esp_openthread.h"
 #include "esp_openthread_lock.h"
@@ -50,9 +54,12 @@ void OpenThreadComponent::setup() {
   // * netif
   // * ot task queue
   // * radio driver
-#ifdef USE_OPENTHREAD_BORDER_ROUTER
+#if defined(USE_OPENTHREAD_BORDER_ROUTER) && !defined(USE_OPENTHREAD_RCP_UART)
   // * border router
   constexpr size_t max_eventfds = 4;
+#elif defined(USE_OPENTHREAD_BORDER_ROUTER)
+  // UART Spinel does not use an eventfd for the radio transport.
+  constexpr size_t max_eventfds = 3;
 #else
   constexpr size_t max_eventfds = 3;
 #endif
@@ -88,8 +95,28 @@ void OpenThreadComponent::ot_main() {
   esp_openthread_platform_config_t config = {
       .radio_config =
           {
+#ifdef USE_OPENTHREAD_RCP_UART
+              .radio_mode = RADIO_MODE_UART_RCP,
+              .radio_uart_config =
+                  {
+                      .port = UART_NUM_1,
+                      .uart_config =
+                          {
+                              .baud_rate = static_cast<int>(this->rcp_baud_rate_),
+                              .data_bits = UART_DATA_8_BITS,
+                              .parity = UART_PARITY_DISABLE,
+                              .stop_bits = UART_STOP_BITS_1,
+                              .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+                              .rx_flow_ctrl_thresh = 0,
+                              .source_clk = UART_SCLK_DEFAULT,
+                          },
+                      .rx_pin = static_cast<gpio_num_t>(this->rcp_rx_pin_),
+                      .tx_pin = static_cast<gpio_num_t>(this->rcp_tx_pin_),
+                  },
+#else
               .radio_mode = RADIO_MODE_NATIVE,
               .radio_uart_config = {},
+#endif
           },
       .host_config =
           {
@@ -105,6 +132,14 @@ void OpenThreadComponent::ot_main() {
               .task_queue_size = 10,
           },
   };
+
+#ifdef USE_OPENTHREAD_RCP_UART
+  if (this->rcp_reset_pin_ >= 0) {
+    esp_openthread_register_rcp_failure_handler(OpenThreadComponent::rcp_failure_handler);
+    esp_openthread_set_coprocessor_reset_failure_callback(OpenThreadComponent::rcp_failure_handler);
+    this->reset_rcp_();
+  }
+#endif
 
   // Initialize the OpenThread stack
   // otLoggingSetLevel(OT_LOG_LEVEL_DEBG);
@@ -218,6 +253,28 @@ void OpenThreadComponent::mark_task_failed_() {
   this->defer([this]() { this->mark_failed(); });
 }
 
+#ifdef USE_OPENTHREAD_RCP_UART
+void OpenThreadComponent::rcp_failure_handler() {
+  if (global_openthread_component != nullptr) {
+    global_openthread_component->reset_rcp_();
+  }
+}
+
+void OpenThreadComponent::reset_rcp_() {
+  gpio_config_t reset_pin_config{};
+  reset_pin_config.pin_bit_mask = 1ULL << this->rcp_reset_pin_;
+  reset_pin_config.mode = GPIO_MODE_OUTPUT;
+  if (const esp_err_t err = gpio_config(&reset_pin_config); err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to configure RCP reset pin: %s", esp_err_to_name(err));
+    return;
+  }
+  gpio_set_level(static_cast<gpio_num_t>(this->rcp_reset_pin_), this->rcp_reset_active_level_);
+  vTaskDelay(pdMS_TO_TICKS(10));
+  gpio_set_level(static_cast<gpio_num_t>(this->rcp_reset_pin_), !this->rcp_reset_active_level_);
+  vTaskDelay(pdMS_TO_TICKS(30));
+}
+#endif
+
 int OpenThreadComponent::openthread_stop_() { return esp_openthread_mainloop_exit(); }
 
 network::IPAddresses OpenThreadComponent::get_ip_addresses() {
@@ -265,6 +322,7 @@ void OpenThreadBorderRouterComponent::loop() {
     return;
   }
 
+#ifndef USE_OPENTHREAD_RCP_UART
   err = esp_coex_wifi_i154_enable();
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed to enable Wi-Fi/802.15.4 coexistence: %s", esp_err_to_name(err));
@@ -272,13 +330,18 @@ void OpenThreadBorderRouterComponent::loop() {
     this->mark_failed();
     return;
   }
+#endif
   this->started_ = true;
 }
 
 void OpenThreadBorderRouterComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "OpenThread Border Router:\n"
                      "  Backbone: Wi-Fi STA\n"
+#ifdef USE_OPENTHREAD_RCP_UART
+                     "  Radio: External UART RCP\n"
+#else
                      "  Radio: Native 802.15.4\n"
+#endif
                      "  Startup: After Wi-Fi connection\n"
                      "  Experimental: YES");
 }
