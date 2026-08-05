@@ -237,9 +237,11 @@ bool OpenThreadComponent::teardown() {
       ESP_LOGW(TAG, "Failed to acquire OpenThread lock during teardown, leaking memory");
       return true;
     }
+#ifndef USE_OPENTHREAD_BORDER_ROUTER
     otInstance *instance = lock.get_instance();
     otSrpClientClearHostAndServices(instance);
     otSrpClientBuffersFreeAllServices(instance);
+#endif
     global_openthread_component = nullptr;
     ESP_LOGD(TAG, "Exit main loop ");
     int error = this->openthread_stop_();

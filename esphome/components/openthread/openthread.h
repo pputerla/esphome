@@ -15,6 +15,10 @@
 #include <optional>
 #include <vector>
 
+#ifdef USE_ESP32
+#include "esp_netif.h"
+#endif
+
 namespace esphome::openthread {
 
 class InstanceLock;
@@ -28,11 +32,19 @@ class OpenThreadComponent final : public Component {
   void dump_config() override;
   void setup() override;
   bool teardown() override;
-  float get_setup_priority() const override { return setup_priority::WIFI; }
+  float get_setup_priority() const override {
+#ifdef USE_OPENTHREAD_BORDER_ROUTER
+    return setup_priority::WIFI - 1.0f;
+#else
+    return setup_priority::WIFI;
+#endif
+  }
 
   bool is_connected() const { return this->connected_; }
   /// Returns true once esp_openthread_init() has completed and the OT lock is usable.
   bool is_lock_initialized() const { return this->lock_initialized_; }
+  bool is_ready() const { return this->ready_; }
+  bool has_task_failed() const { return this->task_failed_; }
   network::IPAddresses get_ip_addresses();
   std::optional<otIp6Address> get_omr_address();
   void ot_main();
@@ -61,6 +73,7 @@ class OpenThreadComponent final : public Component {
    * ot_main() runs on the OpenThread task itself and must not acquire the lock.
    */
   void apply_linkmode_(otInstance *instance);
+  void mark_task_failed_();
 
   std::optional<otIp6Address> get_omr_address_(InstanceLock &lock);
   otInstance *get_openthread_instance_();
@@ -71,9 +84,14 @@ class OpenThreadComponent final : public Component {
 #endif
   std::optional<int8_t> output_power_{};
   std::atomic<bool> lock_initialized_{false};
+  std::atomic<bool> ready_{false};
+  std::atomic<bool> task_failed_{false};
   bool teardown_started_{false};
   bool teardown_complete_{false};
   bool connected_{false};
+#ifdef USE_ESP32
+  esp_netif_t *openthread_netif_{nullptr};
+#endif
 
  private:
   // Stores a pointer to a string literal (static storage duration).
@@ -82,6 +100,25 @@ class OpenThreadComponent final : public Component {
 };
 
 extern OpenThreadComponent *global_openthread_component;  // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+
+#ifdef USE_OPENTHREAD_BORDER_ROUTER
+class OpenThreadBorderRouterComponent final : public Component {
+ public:
+  OpenThreadBorderRouterComponent(OpenThreadComponent *openthread, esphome::mdns::MDNSComponent *mdns)
+      : openthread_(openthread), mdns_(mdns) {}
+
+  void setup() override;
+  void loop() override;
+  void dump_config() override;
+  bool teardown() override;
+  float get_setup_priority() const override { return this->mdns_->get_setup_priority() - 1.0f; }
+
+ protected:
+  OpenThreadComponent *openthread_;
+  esphome::mdns::MDNSComponent *mdns_;
+  bool started_{false};
+};
+#endif
 
 class OpenThreadSrpComponent final : public Component {
  public:
