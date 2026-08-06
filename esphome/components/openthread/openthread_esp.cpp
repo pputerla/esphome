@@ -147,6 +147,21 @@ void OpenThreadComponent::ot_main() {
   // Mark lock as initialized so InstanceLock callers know it's safe to acquire.
   // Must be set after esp_openthread_init() which creates the internal semaphore.
   this->lock_initialized_ = true;
+
+  bool launch_mainloop = true;
+#if defined(USE_OPENTHREAD_BORDER_ROUTER) && !defined(USE_OPENTHREAD_RCP_UART)
+  // Enable Wi-Fi/802.15.4 coexistence as soon as the native radio is initialized, before the
+  // Thread network is auto-started below. The native 802.15.4 radio and Wi-Fi share the same RF
+  // frontend on chips like the ESP32-C6; without this, both radios contend for the RF outside the
+  // coexistence arbiter and Wi-Fi scanning/association can fail outright. Doing this only after
+  // Wi-Fi has connected (as the border router used to do) is too late, since the Thread network
+  // auto-starts immediately below while Wi-Fi may still be trying to connect.
+  if (const esp_err_t err = esp_coex_wifi_i154_enable(); err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to enable Wi-Fi/802.15.4 coexistence: %s", esp_err_to_name(err));
+    this->mark_task_failed_();
+    launch_mainloop = false;
+  }
+#endif
   // Fetch OT instance once to avoid repeated call into OT stack
   otInstance *instance = esp_openthread_get_instance();
 
@@ -218,12 +233,11 @@ void OpenThreadComponent::ot_main() {
   }
 #endif
 
-  bool launch_mainloop = true;
   if (dataset.mLength > 0 && !otDatasetIsValid(&dataset, true)) {
     ESP_LOGE(TAG, "Configured OpenThread Active Operational Dataset TLV is invalid");
     this->mark_task_failed_();
     launch_mainloop = false;
-  } else {
+  } else if (launch_mainloop) {
     // esp_openthread_auto_start() calls into otIp6SetEnabled(), which (for Border Router
     // builds) starts the DNS-SD server and opens a UDP socket via otPlatUdpSocket(). That
     // path temporarily releases and re-acquires the OpenThread task-switching lock, which
@@ -329,22 +343,15 @@ void OpenThreadBorderRouterComponent::loop() {
   if (!lock) {
     return;
   }
+  // Wi-Fi/802.15.4 coexistence (native radio builds only) is enabled earlier, right after the
+  // OpenThread radio is initialized in ot_main() -- see the comment there for why it can't wait
+  // until Wi-Fi is connected.
   esp_err_t err = esp_openthread_border_router_init();
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed to initialize OpenThread Border Router: %s", esp_err_to_name(err));
     this->mark_failed();
     return;
   }
-
-#ifndef USE_OPENTHREAD_RCP_UART
-  err = esp_coex_wifi_i154_enable();
-  if (err != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to enable Wi-Fi/802.15.4 coexistence: %s", esp_err_to_name(err));
-    esp_openthread_border_router_deinit();
-    this->mark_failed();
-    return;
-  }
-#endif
   this->started_ = true;
 }
 
