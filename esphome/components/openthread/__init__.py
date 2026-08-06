@@ -173,6 +173,7 @@ def set_sdkconfig_options(config: ConfigType) -> None:
         add_idf_sdkconfig_option("CONFIG_MBEDTLS_SSL_PROTO_DTLS", True)
         add_idf_sdkconfig_option("CONFIG_MBEDTLS_KEY_EXCHANGE_ECJPAKE", True)
         add_idf_sdkconfig_option("CONFIG_MBEDTLS_ECJPAKE_C", True)
+        add_idf_sdkconfig_option("CONFIG_MDNS_MAX_SERVICES", 50)
 
     # TODO: Add support for synchronized sleepy end devices (SSED)
     add_idf_sdkconfig_option(f"CONFIG_OPENTHREAD_{config.get(CONF_DEVICE_TYPE)}", True)
