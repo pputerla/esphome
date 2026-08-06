@@ -193,13 +193,18 @@ void OpenThreadComponent::ot_main() {
   otOperationalDatasetTlvs dataset = {};
 
 #ifndef USE_OPENTHREAD_FORCE_DATASET
-  // Check if openthread has a valid dataset from a previous execution
-  otError error = otDatasetGetActiveTlvs(instance, &dataset);
-  if (error != OT_ERROR_NONE) {
-    // Make sure the length is 0 so we fallback to the configuration
-    dataset.mLength = 0;
-  } else {
-    ESP_LOGI(TAG, "Found existing dataset, ignoring config (force_dataset: true to override)");
+  {
+    // Hold the OpenThread lock for all instance access below, matching Espressif's own
+    // ot_network_auto_start() helper (see the comment on esp_openthread_auto_start() below).
+    InstanceLock lock = InstanceLock::acquire();
+    // Check if openthread has a valid dataset from a previous execution
+    otError error = otDatasetGetActiveTlvs(instance, &dataset);
+    if (error != OT_ERROR_NONE) {
+      // Make sure the length is 0 so we fallback to the configuration
+      dataset.mLength = 0;
+    } else {
+      ESP_LOGI(TAG, "Found existing dataset, ignoring config (force_dataset: true to override)");
+    }
   }
 #endif
 
@@ -218,10 +223,19 @@ void OpenThreadComponent::ot_main() {
     ESP_LOGE(TAG, "Configured OpenThread Active Operational Dataset TLV is invalid");
     this->mark_task_failed_();
     launch_mainloop = false;
-  } else if (const esp_err_t err = esp_openthread_auto_start(dataset.mLength > 0 ? &dataset : nullptr); err != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to start OpenThread: %s", esp_err_to_name(err));
-    this->mark_task_failed_();
-    launch_mainloop = false;
+  } else {
+    // esp_openthread_auto_start() calls into otIp6SetEnabled(), which (for Border Router
+    // builds) starts the DNS-SD server and opens a UDP socket via otPlatUdpSocket(). That
+    // path temporarily releases and re-acquires the OpenThread task-switching lock, which
+    // asserts unless this task already holds the OpenThread lock. Espressif's own examples
+    // (ot_network_auto_start() in ot_examples_common) always take the lock around
+    // esp_openthread_auto_start() for this reason.
+    InstanceLock lock = InstanceLock::acquire();
+    if (const esp_err_t err = esp_openthread_auto_start(dataset.mLength > 0 ? &dataset : nullptr); err != ESP_OK) {
+      ESP_LOGE(TAG, "Failed to start OpenThread: %s", esp_err_to_name(err));
+      this->mark_task_failed_();
+      launch_mainloop = false;
+    }
   }
 
   if (launch_mainloop) {
