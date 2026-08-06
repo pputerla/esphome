@@ -11,8 +11,10 @@
 #include "esp_openthread_border_router.h"
 #include "esphome/components/wifi/wifi_component.h"
 #endif
-#ifdef USE_OPENTHREAD_RCP_UART
+#if defined(USE_OPENTHREAD_RCP_UART) || defined(USE_OPENTHREAD_ANTENNA_SWITCH)
 #include "driver/gpio.h"
+#endif
+#ifdef USE_OPENTHREAD_RCP_UART
 #include "esp_openthread_spinel.h"
 #endif
 #include "esp_log.h"
@@ -380,6 +382,39 @@ bool OpenThreadBorderRouterComponent::teardown() {
   }
   this->started_ = false;
   return true;
+}
+#endif
+
+#ifdef USE_OPENTHREAD_ANTENNA_SWITCH
+void OpenThreadAntennaSwitchComponent::setup() {
+  uint64_t pin_mask = 1ULL << this->select_pin_;
+  if (this->enable_pin_ >= 0) {
+    pin_mask |= 1ULL << this->enable_pin_;
+  }
+  gpio_config_t io_conf{};
+  io_conf.pin_bit_mask = pin_mask;
+  io_conf.mode = GPIO_MODE_OUTPUT;
+  io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+  io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+  io_conf.intr_type = GPIO_INTR_DISABLE;
+  if (const esp_err_t err = gpio_config(&io_conf); err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to configure antenna switch GPIOs: %s", esp_err_to_name(err));
+    this->mark_failed();
+    return;
+  }
+  // Some boards (e.g. Seeed Studio XIAO ESP32-C6) gate the RF switch behind a separate
+  // enable line that must be driven low before the antenna-select pin has any effect.
+  if (this->enable_pin_ >= 0) {
+    gpio_set_level(static_cast<gpio_num_t>(this->enable_pin_), 0);
+  }
+  gpio_set_level(static_cast<gpio_num_t>(this->select_pin_), this->external_antenna_ ? 1 : 0);
+}
+
+void OpenThreadAntennaSwitchComponent::dump_config() {
+  ESP_LOGCONFIG(TAG,
+                "OpenThread Antenna Switch:\n"
+                "  Selected: %s antenna",
+                this->external_antenna_ ? "external" : "onboard");
 }
 #endif
 

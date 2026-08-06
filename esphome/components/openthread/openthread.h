@@ -137,6 +137,26 @@ class OpenThreadBorderRouterComponent final : public Component {
 };
 #endif
 
+#ifdef USE_OPENTHREAD_ANTENNA_SWITCH
+// Configures a GPIO-based RF antenna switch (e.g. the Seeed Studio XIAO ESP32-C6's
+// onboard-ceramic vs external u.FL antenna select). Runs at HARDWARE priority so the
+// antenna is selected before Wi-Fi or the native 802.15.4 radio start using it.
+class OpenThreadAntennaSwitchComponent final : public Component {
+ public:
+  OpenThreadAntennaSwitchComponent(int enable_pin, int select_pin, bool external_antenna)
+      : enable_pin_(enable_pin), select_pin_(select_pin), external_antenna_(external_antenna) {}
+
+  void setup() override;
+  void dump_config() override;
+  float get_setup_priority() const override { return setup_priority::HARDWARE; }
+
+ protected:
+  int enable_pin_;
+  int select_pin_;
+  bool external_antenna_;
+};
+#endif
+
 class OpenThreadSrpComponent final : public Component {
  public:
   void set_mdns(esphome::mdns::MDNSComponent *mdns);

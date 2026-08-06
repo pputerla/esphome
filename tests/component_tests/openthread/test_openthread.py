@@ -11,20 +11,28 @@ from esphome.components.esp32.const import (
     KEY_SDKCONFIG_OPTIONS,
     KEY_VARIANT,
 )
-from esphome.components.openthread import _final_validate, _validate_tlv_hex
+from esphome.components.openthread import (
+    _final_validate,
+    _validate_antenna_switch,
+    _validate_tlv_hex,
+)
 from esphome.components.openthread.const import (
     CONF_BORDER_ROUTER,
     CONF_DEVICE_TYPE,
+    CONF_EXTERNAL_ANTENNA,
     CONF_RCP,
+    CONF_SELECT_PIN,
 )
 import esphome.config_validation as cv
 from esphome.const import (
     CONF_AP,
     CONF_ENABLE_IPV6,
     CONF_ENABLE_ON_BOOT,
+    CONF_ENABLE_PIN,
     CONF_ID,
     CONF_LOGGER,
     CONF_NETWORKS,
+    CONF_NUMBER,
     CONF_OPENTHREAD,
     CONF_WIFI,
     KEY_FRAMEWORK_VERSION,
@@ -164,6 +172,28 @@ def test_border_router_rcp_codegen(
     assert "CONFIG_ESP_COEX_SW_COEXIST_ENABLE" not in sdkconfig
     assert any(define.name == "USE_OPENTHREAD_RCP_UART" for define in CORE.defines)
     assert "OpenThreadComponent(460800, 18, 17, 16, false)" in cpp_main
+
+
+def test_border_router_antenna_switch_codegen(
+    generate_main: Callable[[str | Path], str],
+) -> None:
+    cpp_main = generate_main(CONFIG_DIR / "border_router_antenna_switch.yaml")
+
+    assert any(
+        define.name == "USE_OPENTHREAD_ANTENNA_SWITCH" for define in CORE.defines
+    )
+    assert "OpenThreadAntennaSwitchComponent(3, 14, true)" in cpp_main
+
+
+def test_antenna_switch_rejects_duplicate_pins() -> None:
+    with pytest.raises(cv.Invalid, match="must be different"):
+        _validate_antenna_switch(
+            {
+                CONF_ENABLE_PIN: {CONF_NUMBER: 14},
+                CONF_SELECT_PIN: {CONF_NUMBER: 14},
+                CONF_EXTERNAL_ANTENNA: False,
+            }
+        )
 
 
 @pytest.mark.parametrize(

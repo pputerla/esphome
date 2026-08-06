@@ -28,6 +28,7 @@ from esphome.const import (
     CONF_CHANNEL,
     CONF_ENABLE_IPV6,
     CONF_ENABLE_ON_BOOT,
+    CONF_ENABLE_PIN,
     CONF_FRAMEWORK,
     CONF_HARDWARE_UART,
     CONF_ID,
@@ -54,9 +55,11 @@ import esphome.final_validate as fv
 from esphome.types import ConfigType
 
 from .const import (
+    CONF_ANTENNA_SWITCH,
     CONF_BORDER_ROUTER,
     CONF_DEVICE_TYPE,
     CONF_EXT_PAN_ID,
+    CONF_EXTERNAL_ANTENNA,
     CONF_FORCE_DATASET,
     CONF_MDNS_ID,
     CONF_MESH_LOCAL_PREFIX,
@@ -66,6 +69,7 @@ from .const import (
     CONF_POLL_PERIOD,
     CONF_PSKC,
     CONF_RCP,
+    CONF_SELECT_PIN,
     CONF_SRP_ID,
     CONF_TLV,
 )
@@ -185,6 +189,9 @@ OpenThreadSrpComponent = openthread_ns.class_("OpenThreadSrpComponent", cg.Compo
 OpenThreadBorderRouterComponent = openthread_ns.class_(
     "OpenThreadBorderRouterComponent", cg.Component
 )
+OpenThreadAntennaSwitchComponent = openthread_ns.class_(
+    "OpenThreadAntennaSwitchComponent", cg.Component
+)
 
 
 def _validate_hex_128(value: object) -> int:
@@ -209,6 +216,27 @@ def _validate_mesh_local_prefix(value: object) -> IPv6Network:
     return value
 
 
+def _validate_antenna_switch(config: ConfigType) -> ConfigType:
+    if (enable_pin := config.get(CONF_ENABLE_PIN)) is not None and (
+        enable_pin[CONF_NUMBER] == config[CONF_SELECT_PIN][CONF_NUMBER]
+    ):
+        raise cv.Invalid("Antenna switch enable_pin and select_pin must be different")
+    return config
+
+
+_ANTENNA_SWITCH_SCHEMA = cv.All(
+    cv.Schema(
+        {
+            cv.GenerateID(): cv.declare_id(OpenThreadAntennaSwitchComponent),
+            cv.Optional(CONF_ENABLE_PIN): pins.internal_gpio_output_pin_schema,
+            cv.Required(CONF_SELECT_PIN): pins.internal_gpio_output_pin_schema,
+            cv.Optional(CONF_EXTERNAL_ANTENNA, default=False): cv.boolean,
+        }
+    ),
+    _validate_antenna_switch,
+)
+
+
 def _validate_border_router(value: object) -> ConfigType:
     if value is None:
         value = {}
@@ -216,6 +244,7 @@ def _validate_border_router(value: object) -> ConfigType:
         {
             cv.GenerateID(): cv.declare_id(OpenThreadBorderRouterComponent),
             cv.Optional(CONF_RCP): _RCP_SCHEMA,
+            cv.Optional(CONF_ANTENNA_SWITCH): _ANTENNA_SWITCH_SCHEMA,
         }
     )(value)
 
@@ -460,6 +489,11 @@ async def to_code(config):
         cg.add_define("USE_MDNS_STORE_SERVICES")
     if rcp is not None:
         cg.add_define("USE_OPENTHREAD_RCP_UART")
+    antenna_switch = (
+        config[CONF_BORDER_ROUTER].get(CONF_ANTENNA_SWITCH) if border_router else None
+    )
+    if antenna_switch is not None:
+        cg.add_define("USE_OPENTHREAD_ANTENNA_SWITCH")
     if config.get(CONF_FORCE_DATASET):
         cg.add_define("USE_OPENTHREAD_FORCE_DATASET")
     if tlv := config.get(CONF_TLV):
@@ -491,6 +525,16 @@ async def to_code(config):
         border_router_config = config[CONF_BORDER_ROUTER]
         br = cg.new_Pvariable(border_router_config[CONF_ID], ot, mdns_component)
         await cg.register_component(br, border_router_config)
+        if antenna_switch is not None:
+            enable_pin = antenna_switch.get(CONF_ENABLE_PIN)
+            select_pin = antenna_switch[CONF_SELECT_PIN]
+            ant = cg.new_Pvariable(
+                antenna_switch[CONF_ID],
+                enable_pin[CONF_NUMBER] if enable_pin is not None else -1,
+                select_pin[CONF_NUMBER],
+                antenna_switch[CONF_EXTERNAL_ANTENNA],
+            )
+            await cg.register_component(ant, antenna_switch)
     else:
         srp = cg.new_Pvariable(config[CONF_SRP_ID])
         cg.add(srp.set_mdns(mdns_component))
