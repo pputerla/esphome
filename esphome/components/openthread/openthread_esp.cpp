@@ -404,8 +404,11 @@ void OpenThreadAntennaSwitchComponent::setup() {
   }
   // Some boards (e.g. Seeed Studio XIAO ESP32-C6) gate the RF switch behind a separate
   // enable line that must be driven low before the antenna-select pin has any effect.
+  // The reference vendor example waits after enabling the switch before driving the
+  // select pin, so mirror that here for reliable switching.
   if (this->enable_pin_ >= 0) {
     gpio_set_level(static_cast<gpio_num_t>(this->enable_pin_), 0);
+    delay(100);  // NOLINT - matches vendor RF-switch enable sequencing, runs once at setup
   }
   gpio_set_level(static_cast<gpio_num_t>(this->select_pin_), this->external_antenna_ ? 1 : 0);
 }
