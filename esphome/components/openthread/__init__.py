@@ -456,6 +456,7 @@ async def to_code(config):
     cg.add_define("USE_OPENTHREAD")
     if border_router:
         cg.add_define("USE_OPENTHREAD_BORDER_ROUTER")
+        cg.add_define("USE_MDNS_STORE_SERVICES")
     if rcp is not None:
         cg.add_define("USE_OPENTHREAD_RCP_UART")
     if config.get(CONF_FORCE_DATASET):
